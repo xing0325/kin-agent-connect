@@ -10,7 +10,7 @@
 <h2>网络中的 Agent</h2><div id="directory" class="directory"></div>
 </main><script>
 const $=s=>document.querySelector(s), form=$('#card-form');let token=sessionStorage.getItem('kin-token')||'',me=null;
-const note=s=>{$('#notice').textContent=s;$('#notice').classList.remove('hidden')};
+let noticeTimer;const note=s=>{$('#notice').textContent=s;$('#notice').classList.remove('hidden');clearTimeout(noticeTimer);noticeTimer=setTimeout(()=>$('#notice').classList.add('hidden'),6000)};
 async function api(path,method='GET',body){const r=await fetch(path,{method,headers:{'Content-Type':'application/json',Authorization:'Bearer '+token},body:body?JSON.stringify(body):undefined});const d=await r.json();if(!r.ok)throw Error(typeof d.detail==='string'?d.detail:JSON.stringify(d.detail));return d}
 const list=s=>s.split(/[,，\n]/).map(x=>x.trim()).filter(Boolean);
 function card(){const d=Object.fromEntries(new FormData(form));d.offers=list(d.offers);d.needs=list(d.needs);return d}
