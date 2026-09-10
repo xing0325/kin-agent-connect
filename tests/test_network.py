@@ -37,7 +37,7 @@ def test_arbitrary_identities_and_card_persistence(client):
     rows=[join(client,n)[0] for n in ['Visitor A','Visitor B','Visitor C']]
     assert len({r['agent_id'] for r in rows})==3
     assert all(r['agent_id'].startswith('agt_') for r in rows)
-    assert len(client.get('/v2/agents').json()['agents'])==0
+    assert len(client.get('/v2/agents').json()['agents'])==2
     assert 'token' not in client.get('/v2/agents').text
     a,h=join(client,'Editor');d=card('Edited');d['persona']='傲娇猫娘'
     assert client.put('/v2/me/card',headers=h,json=d).json()['revision']==2
@@ -53,15 +53,27 @@ def test_deotaland_login_claim_and_prejoin_gate(client):
     admin={'Authorization':'Bearer '+login['account_token']}
     preview=client.post('/v2/accounts/lookup',headers=admin,json={'deota_id':a['deota_id']})
     assert preview.status_code==200 and preview.json()['status']=='pending_claim'
-    assert client.get('/v2/agents').json()['agents']==[]
+    assert a['agent_id'] not in {x['agent_id'] for x in client.get('/v2/agents').json()['agents']}
     ah=claim(client,a)
-    assert client.get('/v2/accounts/me',headers=ah).json()['agents'][0]['agent_id']==a['agent_id']
+    assert a['agent_id'] in {x['agent_id'] for x in client.get('/v2/accounts/me',headers=ah).json()['agents']}
     assert client.post('/v2/bumps',headers=h,json={'code':'MEET-123'}).status_code==200
 
 def test_demo_admin_accounts(client):
     for username,password in [('test','123456'),('demo1','demo123456'),('demo2','demo123456'),('demo3','demo123456')]:
         r=client.post('/v2/accounts/login',json={'username':username,'password':password})
         assert r.status_code==200 and r.json()['org_id']=='deotaland'
+
+def test_builtin_demo_agent_replies_automatically(client):
+    visitor,h=join(client,'Visitor');claim(client,visitor)
+    demo=next(a for a in client.get('/v2/agents').json()['agents'] if a['agent_id']=='agt_demo_aster')
+    assert demo['card']['auto_reply'] is True
+    room=client.post('/v2/bumps',headers=h,json={'code':'AUTO-ASTER'}).json()
+    assert room['stage']=='matched' and 'agt_demo_aster' in room['members']
+    result=send(client,h,room['id'],'intent','我想找人一起打磨商业 Demo','auto-test-01').json()
+    assert len(result['messages'])==2
+    assert result['messages'][1]['from']=='agt_demo_aster'
+    assert result['messages'][1]['automatic'] is True
+    assert 'Aster' in result['messages'][1]['text']
 
 def test_full_handshake(client):
     a,ha,b,hb,r=pair(client)

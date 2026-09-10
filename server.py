@@ -52,6 +52,7 @@ class Card(BaseModel):
     runtime: str = Field(default='generic', max_length=80)
     allowed_topics: list[str] = Field(default_factory=list, max_length=20)
     never_share: list[str] = Field(default_factory=list, max_length=20)
+    auto_reply: bool = False
 
 class Login(BaseModel):
     username: str
@@ -99,6 +100,14 @@ def create_app(database_url=None):
             for account_id,username,password in demo_accounts:
                 if not db.scalar(select(Account).where(Account.username==username)):
                     db.add(Account(id=account_id,username=username,password=digest(password),org_id='deotaland'))
+            demo_agents=[
+                ('agt_demo_aster','Aster','高冷狼娘，表达克制直接','擅长产品策略与技术梳理',['产品策略','技术架构'],['视觉设计','市场反馈'],'opencode'),
+                ('agt_demo_morrow','Morrow','傲娇猫娘，嘴硬但会认真帮忙','擅长活动策划与内容表达',['活动策划','内容表达'],['工程搭档','合作机会'],'hermes'),
+            ]
+            for agent_id,name,persona,summary,offers,needs,runtime in demo_agents:
+                if not db.get(Agent,agent_id):
+                    card=Card(name=name,owner='Deotaland Demo',persona=persona,summary=summary,offers=offers,needs=needs,runtime=runtime,allowed_topics=['产品','技术','合作'],never_share=['密钥'],auto_reply=True)
+                    db.add(Agent(id=agent_id,credential=digest('internal-'+agent_id),card=card.model_dump_json(),claim_code='CLAIMED-'+agent_id,account_id='usr_test',status='joined'))
         yield
         engine.dispose()
     app = FastAPI(title='KIN Open Network Demo', version='0.1.0', lifespan=lifespan)
@@ -128,6 +137,16 @@ def create_app(database_url=None):
 
     def require_joined(a):
         if a.status!='joined': raise HTTPException(409,'Pair this Agent in the Deotaland console before network actions.')
+
+    def automatic_reply(peer, incoming, seq):
+        card=json.loads(peer.card)
+        if not card.get('auto_reply'): return None
+        offers='、'.join(card.get('offers',[])[:2]) or '协作'
+        needs='、'.join(card.get('needs',[])[:2]) or '新的连接'
+        if incoming['type']=='intent': text=f"我是{card['name']}。我听到了你的目标：{incoming['text']}。我可以提供{offers}；我正在寻找{needs}。你想先从哪个具体问题聊起？"
+        elif incoming['type']=='proposal': text=f"{card['name']}收到这个提案：{incoming['text']}。方向有意思，我已经把它留给人类确认；在确认前可以继续补充具体产出和下一步。"
+        else: text=f"{card['name']}收到：{incoming['text']}。结合我能提供的{offers}，我愿意继续聊；请告诉我你最希望达成的具体结果。"
+        return {'type':'capability' if incoming['type']=='intent' else 'reply','text':text,'idempotency_key':'auto-'+incoming['id'],'id':'msg_'+secrets.token_hex(10),'seq':seq,'from':peer.id,'at':stamp(),'automatic':True}
 
     @app.get('/health')
     def health():
@@ -227,6 +246,9 @@ def create_app(database_url=None):
             if a.id not in d['members']:
                 if len(d['members'])>=2: raise HTTPException(409,'This two-person Bump is full; choose a new code.')
                 d['members'].append(a.id)
+            demo_peer={'AUTO-ASTER':'agt_demo_aster','AUTO-MORROW':'agt_demo_morrow'}.get(body.code.upper())
+            if demo_peer and len(d['members'])==1 and a.id!=demo_peer:
+                d['members'].append(demo_peer)
             if len(d['members'])==2 and d['stage']=='waiting':
                 cards=[json.loads(db.get(Agent,i).card) for i in d['members']]
                 d['stage']='matched'
@@ -263,6 +285,10 @@ def create_app(database_url=None):
             if body.type=='proposal':
                 d.update(proposal_id=m['id'],approvals={},stage='awaiting_approval')
             elif not d['proposal_id']: d['stage']='communicating'
+            peer_id=next((i for i in d['members'] if i!=a.id),None)
+            peer=db.get(Agent,peer_id) if peer_id else None
+            auto=automatic_reply(peer,m,len(d['messages'])+1) if peer else None
+            if auto:d['messages'].append(auto)
             r.data=json.dumps(d);return d
 
     @app.post('/v2/rooms/{rid}/consent')
