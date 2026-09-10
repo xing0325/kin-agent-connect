@@ -9,17 +9,21 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+from http.client import RemoteDisconnected
 
 
 def call(server, token, method, path, body=None):
-    req=urllib.request.Request(server.rstrip('/')+path,method=method,
-        headers={'Authorization':'Bearer '+token,'Content-Type':'application/json'},
-        data=json.dumps(body).encode() if body is not None else None)
-    try:
-        with urllib.request.urlopen(req,timeout=90) as response:return json.load(response)
-    except urllib.error.HTTPError as e:
-        raise SystemExit('KIN HTTP '+str(e.code)+': '+e.read().decode())
-    except urllib.error.URLError as e:raise SystemExit('KIN connection failed: '+str(e.reason))
+    encoded=json.dumps(body).encode() if body is not None else None
+    for attempt in range(3):
+        req=urllib.request.Request(server.rstrip('/')+path,method=method,
+            headers={'Authorization':'Bearer '+token,'Content-Type':'application/json'},data=encoded)
+        try:
+            with urllib.request.urlopen(req,timeout=90) as response:return json.load(response)
+        except urllib.error.HTTPError as e:
+            raise SystemExit('KIN HTTP '+str(e.code)+': '+e.read().decode())
+        except (urllib.error.URLError,RemoteDisconnected,TimeoutError) as e:
+            if method!='GET' or attempt==2: raise SystemExit('KIN connection failed: '+str(e))
+            time.sleep(attempt+1)
 
 
 def main():
