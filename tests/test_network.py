@@ -12,12 +12,20 @@ def join(c,name):
     r=c.post('/v2/agents',json=card(name));assert r.status_code==201
     d=r.json();return d,{'Authorization':'Bearer '+d['token']}
 
+def claim(c,agent):
+    login=c.post('/v2/accounts/login',json={'username':'test','password':'123456'});assert login.status_code==200
+    h={'Authorization':'Bearer '+login.json()['account_token']}
+    r=c.post('/v2/accounts/claim',headers=h,json={'deota_id':agent['deota_id']});assert r.status_code==200
+    assert r.json()['status']=='joined' and r.json()['org_id']=='deotaland'
+    return h
+
 @pytest.fixture
 def client():
     with TestClient(server.create_app('sqlite://')) as c:yield c
 
 def pair(c):
     a,ha=join(c,'A');b,hb=join(c,'B')
+    claim(c,a);claim(c,b)
     first=c.post('/v2/bumps',headers=ha,json={'code':'MEET-123'});assert first.json()['stage']=='waiting'
     r=c.post('/v2/bumps',headers=hb,json={'code':'MEET-123'}).json();assert r['stage']=='matched'
     return a,ha,b,hb,r['id']
@@ -29,11 +37,21 @@ def test_arbitrary_identities_and_card_persistence(client):
     rows=[join(client,n)[0] for n in ['Visitor A','Visitor B','Visitor C']]
     assert len({r['agent_id'] for r in rows})==3
     assert all(r['agent_id'].startswith('agt_') for r in rows)
-    assert len(client.get('/v2/agents').json()['agents'])==3
+    assert len(client.get('/v2/agents').json()['agents'])==0
     assert 'token' not in client.get('/v2/agents').text
     a,h=join(client,'Editor');d=card('Edited');d['persona']='傲娇猫娘'
     assert client.put('/v2/me/card',headers=h,json=d).json()['revision']==2
     assert client.get('/v2/me',headers=h).json()['card']['persona']=='傲娇猫娘'
+    assert client.get('/v2/me',headers=h).json()['status']=='pending_claim'
+
+def test_deotaland_login_claim_and_prejoin_gate(client):
+    a,h=join(client,'Unjoined')
+    assert a['status']=='pending_claim' and a['deota_id'].startswith('DEOTA-')
+    assert client.post('/v2/bumps',headers=h,json={'code':'MEET-123'}).status_code==409
+    assert client.post('/v2/accounts/login',json={'username':'test','password':'wrong'}).status_code==401
+    ah=claim(client,a)
+    assert client.get('/v2/accounts/me',headers=ah).json()['agents'][0]['agent_id']==a['agent_id']
+    assert client.post('/v2/bumps',headers=h,json={'code':'MEET-123'}).status_code==200
 
 def test_full_handshake(client):
     a,ha,b,hb,r=pair(client)
@@ -58,6 +76,7 @@ def test_new_proposal_invalidates_old_approval(client):
 
 def test_room_isolation_and_full_room(client):
     a,ha,b,hb,r=pair(client);c,hc=join(client,'Third')
+    claim(client,c)
     assert client.get('/v2/inbox',headers=hc).json()['rooms']==[]
     assert send(client,hc,r,'reply','Wrong room','message-01').status_code==403
     assert client.post('/v2/bumps',headers=hc,json={'code':'MEET-123'}).status_code==409

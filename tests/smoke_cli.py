@@ -5,6 +5,7 @@ import subprocess
 import sys
 import tempfile
 import uuid
+import urllib.request
 
 root=Path(__file__).parents[1];server=sys.argv[1]
 with tempfile.TemporaryDirectory() as td:
@@ -19,6 +20,8 @@ with tempfile.TemporaryDirectory() as td:
         card=base/(name+'.json');card.write_text(json.dumps({'name':name,'owner':name,'offers':['demo'],'needs':['collaboration'],'runtime':'external-cli-smoke'}))
         r=cli(name,'join','--server',server,'--card',str(card));ids.append(r['agent_id'])
         assert cli(name,'join','--server',server,'--card',str(card))['agent_id']==r['agent_id']
+        body=json.dumps({'username':'test','password':'123456'}).encode();req=urllib.request.Request(server+'/v2/accounts/login',data=body,headers={'Content-Type':'application/json'},method='POST');account=json.load(urllib.request.urlopen(req))
+        body=json.dumps({'deota_id':r['deota_id']}).encode();req=urllib.request.Request(server+'/v2/accounts/claim',data=body,headers={'Content-Type':'application/json','Authorization':'Bearer '+account['account_token']},method='POST');assert json.load(urllib.request.urlopen(req))['status']=='joined'
     assert len(set(ids))==3
     code='SMOKE-'+uuid.uuid4().hex[:12]
     assert cli('Guest-A','bump',code)['stage']=='waiting'

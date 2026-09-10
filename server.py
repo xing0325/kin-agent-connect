@@ -21,11 +21,21 @@ Base = declarative_base()
 LOCK = threading.RLock()
 
 class Agent(Base):
-    __tablename__ = 'kin_members'
+    __tablename__ = 'kin_members_v2'
     id = Column(String(64), primary_key=True)
     credential = Column(String(64), unique=True, nullable=False)
     card = Column(Text, nullable=False)
     revision = Column(Integer, nullable=False, default=1)
+    claim_code = Column(String(32), unique=True, nullable=False)
+    account_id = Column(String(64), nullable=True)
+    status = Column(String(32), nullable=False, default='pending_claim')
+
+class Account(Base):
+    __tablename__ = 'kin_accounts'
+    id = Column(String(64), primary_key=True)
+    username = Column(String(80), unique=True, nullable=False)
+    password = Column(String(128), nullable=False)
+    org_id = Column(String(80), nullable=False)
 
 class Room(Base):
     __tablename__ = 'kin_rooms'
@@ -40,6 +50,18 @@ class Card(BaseModel):
     offers: list[str] = Field(default_factory=list, max_length=20)
     needs: list[str] = Field(default_factory=list, max_length=20)
     runtime: str = Field(default='generic', max_length=80)
+    allowed_topics: list[str] = Field(default_factory=list, max_length=20)
+    never_share: list[str] = Field(default_factory=list, max_length=20)
+
+class Login(BaseModel):
+    username: str
+    password: str
+
+class AccountCreate(Login):
+    org_id: str = Field(default='deotaland',min_length=2,max_length=80)
+
+class Claim(BaseModel):
+    deota_id: str
 
 class Bump(BaseModel):
     code: str = Field(pattern=r'^[A-Za-z0-9_-]{4,48}$')
@@ -67,15 +89,22 @@ def create_app(database_url=None):
     if url in ('sqlite://','sqlite:///:memory:'): options['poolclass'] = StaticPool
     engine = create_engine(url, pool_pre_ping=True, **options)
     Session = sessionmaker(engine, expire_on_commit=False)
+    account_sessions = {}
+    agent_sessions = {}
     @asynccontextmanager
     async def lifespan(app):
         Base.metadata.create_all(engine)
+        with Session.begin() as db:
+            if not db.scalar(select(Account).where(Account.username=='test')):
+                db.add(Account(id='usr_test',username='test',password=digest('123456'),org_id='deotaland'))
         yield
         engine.dispose()
     app = FastAPI(title='KIN Open Network Demo', version='0.1.0', lifespan=lifespan)
 
     def member(db, token):
         a = db.scalar(select(Agent).where(Agent.credential == digest(token or '')))
+        if not a and token in agent_sessions:
+            a=db.get(Agent,agent_sessions[token])
         if not a: raise HTTPException(401, 'Unknown credential; register this Agent first.')
         return a
 
@@ -87,7 +116,16 @@ def create_app(database_url=None):
         return r, d
 
     def public(a):
-        return {'agent_id':a.id,'card':json.loads(a.card),'revision':a.revision}
+        return {'agent_id':a.id,'card':json.loads(a.card),'revision':a.revision,'status':a.status,'org_id':'deotaland' if a.account_id else None,'paired':bool(a.account_id)}
+
+    def account(db, token):
+        account_id=account_sessions.get(token or '')
+        a=db.get(Account,account_id) if account_id else None
+        if not a: raise HTTPException(401,'Log in to the Deotaland console first.')
+        return a
+
+    def require_joined(a):
+        if a.status!='joined': raise HTTPException(409,'Pair this Agent in the Deotaland console before network actions.')
 
     @app.get('/health')
     def health():
@@ -100,13 +138,56 @@ def create_app(database_url=None):
     @app.get('/skills/install.md', response_class=PlainTextResponse)
     def install(): return (ROOT/'skills/install.md').read_text()
 
+    @app.post('/v2/accounts/login')
+    def login(body:Login):
+        with Session() as db:
+            a=db.scalar(select(Account).where(Account.username==body.username))
+            if not a or a.password!=digest(body.password): raise HTTPException(401,'Incorrect username or password')
+            token=secrets.token_urlsafe(24);account_sessions[token]=a.id
+            return {'account_token':token,'username':a.username,'org_id':a.org_id}
+
+    @app.post('/v2/accounts',status_code=201)
+    def create_account(body:AccountCreate):
+        with LOCK,Session.begin() as db:
+            if db.scalar(select(Account).where(Account.username==body.username)): raise HTTPException(409,'Username already exists')
+            a=Account(id='usr_'+secrets.token_hex(10),username=body.username,password=digest(body.password),org_id=body.org_id.lower())
+            db.add(a);db.flush();token=secrets.token_urlsafe(24);account_sessions[token]=a.id
+            return {'account_token':token,'username':a.username,'org_id':a.org_id}
+
+    @app.get('/v2/accounts/me')
+    def account_me(authorization:str=Header(default='')):
+        with Session() as db:
+            a=account(db,authorization.removeprefix('Bearer '))
+            agents=list(db.scalars(select(Agent).where(Agent.account_id==a.id)))
+            return {'username':a.username,'org_id':a.org_id,'agents':[public(x) for x in agents]}
+
+    @app.post('/v2/accounts/claim')
+    def claim(body:Claim,authorization:str=Header(default='')):
+        with LOCK,Session.begin() as db:
+            owner=account(db,authorization.removeprefix('Bearer '))
+            a=db.scalar(select(Agent).where(Agent.claim_code==body.deota_id.strip().upper()))
+            if not a: raise HTTPException(404,'Deota ID not found')
+            if a.account_id and a.account_id!=owner.id: raise HTTPException(409,'Deota ID already paired')
+            a.account_id=owner.id;a.status='joined';a.claim_code='CLAIMED-'+a.id
+            console_token=secrets.token_urlsafe(24);agent_sessions[console_token]=a.id
+            return {**public(a),'agent_access_token':console_token}
+
+    @app.post('/v2/accounts/agents/{agent_id}/session')
+    def open_agent_session(agent_id:str,authorization:str=Header(default='')):
+        with Session() as db:
+            owner=account(db,authorization.removeprefix('Bearer '));a=db.get(Agent,agent_id)
+            if not a or a.account_id!=owner.id: raise HTTPException(404,'Paired Agent not found')
+            token=secrets.token_urlsafe(24);agent_sessions[token]=a.id
+            return {**public(a),'agent_access_token':token}
+
     @app.post('/v2/agents', status_code=201)
     def register(card:Card):
         token = secrets.token_urlsafe(32)
+        claim='DEOTA-'+secrets.token_hex(4).upper()
         with LOCK, Session.begin() as db:
-            a = Agent(id='agt_'+secrets.token_hex(10),credential=digest(token),card=card.model_dump_json())
+            a = Agent(id='agt_'+secrets.token_hex(10),credential=digest(token),card=card.model_dump_json(),claim_code=claim)
             db.add(a); db.flush()
-            return {**public(a),'token':token,'console_path':'/','network_identity':'kin://'+a.id}
+            return {**public(a),'token':token,'deota_id':claim,'console_path':'/','network_identity':'kin://'+a.id,'next':'Log in to the Deotaland console and enter deota_id to finish joining.'}
 
     @app.get('/v2/me')
     def me(authorization: str = Header(default='')):
@@ -120,12 +201,13 @@ def create_app(database_url=None):
 
     @app.get('/v2/agents')
     def directory():
-        with Session() as db: return {'agents':[public(a) for a in db.scalars(select(Agent).limit(200))]}
+        with Session() as db: return {'agents':[public(a) for a in db.scalars(select(Agent).where(Agent.status=='joined').limit(200))]}
 
     @app.post('/v2/bumps')
     def bump(body:Bump, authorization:str=Header(default='')):
         with LOCK, Session.begin() as db:
             a=member(db,authorization.removeprefix('Bearer ')); rid='room_'+digest(body.code.upper())[:24]
+            require_joined(a)
             r=db.scalar(select(Room).where(Room.id==rid).with_for_update())
             if r: d=json.loads(r.data)
             else:
@@ -147,6 +229,7 @@ def create_app(database_url=None):
     def inbox(after:int=Query(default=0,ge=0), authorization:str=Header(default='')):
         with Session() as db:
             a=member(db,authorization.removeprefix('Bearer ')); rooms=[]
+            require_joined(a)
             for r in db.scalars(select(Room)):
                 d=json.loads(r.data)
                 if a.id in d['members']:
@@ -158,6 +241,7 @@ def create_app(database_url=None):
     def send(rid:str, body:Message, authorization:str=Header(default='')):
         with LOCK, Session.begin() as db:
             a=member(db,authorization.removeprefix('Bearer ')); r,d=room_for(db,rid,a.id)
+            require_joined(a)
             for m in d['messages']:
                 if m['from']==a.id and m['idempotency_key']==body.idempotency_key:
                     if m['text']!=body.text or m['type']!=body.type: raise HTTPException(409,'Idempotency key reused with different content')
@@ -174,6 +258,7 @@ def create_app(database_url=None):
     def consent(rid:str,body:Consent,authorization:str=Header(default='')):
         with LOCK, Session.begin() as db:
             a=member(db,authorization.removeprefix('Bearer '));r,d=room_for(db,rid,a.id)
+            require_joined(a)
             if body.proposal_id!=d['proposal_id'] or not body.proposal_id: raise HTTPException(409,'Review the latest proposal first')
             if d['stage']=='connected':
                 if body.decision=='approve': return d
