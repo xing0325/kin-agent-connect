@@ -49,9 +49,19 @@ def test_deotaland_login_claim_and_prejoin_gate(client):
     assert a['status']=='pending_claim' and a['deota_id'].startswith('DEOTA-')
     assert client.post('/v2/bumps',headers=h,json={'code':'MEET-123'}).status_code==409
     assert client.post('/v2/accounts/login',json={'username':'test','password':'wrong'}).status_code==401
+    login=client.post('/v2/accounts/login',json={'username':'test','password':'123456'}).json()
+    admin={'Authorization':'Bearer '+login['account_token']}
+    preview=client.post('/v2/accounts/lookup',headers=admin,json={'deota_id':a['deota_id']})
+    assert preview.status_code==200 and preview.json()['status']=='pending_claim'
+    assert client.get('/v2/agents').json()['agents']==[]
     ah=claim(client,a)
     assert client.get('/v2/accounts/me',headers=ah).json()['agents'][0]['agent_id']==a['agent_id']
     assert client.post('/v2/bumps',headers=h,json={'code':'MEET-123'}).status_code==200
+
+def test_demo_admin_accounts(client):
+    for username,password in [('test','123456'),('demo1','demo123456'),('demo2','demo123456'),('demo3','demo123456')]:
+        r=client.post('/v2/accounts/login',json={'username':username,'password':password})
+        assert r.status_code==200 and r.json()['org_id']=='deotaland'
 
 def test_full_handshake(client):
     a,ha,b,hb,r=pair(client)

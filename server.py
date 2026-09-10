@@ -95,8 +95,10 @@ def create_app(database_url=None):
     async def lifespan(app):
         Base.metadata.create_all(engine)
         with Session.begin() as db:
-            if not db.scalar(select(Account).where(Account.username=='test')):
-                db.add(Account(id='usr_test',username='test',password=digest('123456'),org_id='deotaland'))
+            demo_accounts=[('usr_test','test','123456'),('usr_demo1','demo1','demo123456'),('usr_demo2','demo2','demo123456'),('usr_demo3','demo3','demo123456')]
+            for account_id,username,password in demo_accounts:
+                if not db.scalar(select(Account).where(Account.username==username)):
+                    db.add(Account(id=account_id,username=username,password=digest(password),org_id='deotaland'))
         yield
         engine.dispose()
     app = FastAPI(title='KIN Open Network Demo', version='0.1.0', lifespan=lifespan)
@@ -161,16 +163,25 @@ def create_app(database_url=None):
             agents=list(db.scalars(select(Agent).where(Agent.account_id==a.id)))
             return {'username':a.username,'org_id':a.org_id,'agents':[public(x) for x in agents]}
 
+    @app.post('/v2/accounts/lookup')
+    def lookup(body:Claim,authorization:str=Header(default='')):
+        with Session() as db:
+            account(db,authorization.removeprefix('Bearer '))
+            a=db.scalar(select(Agent).where(Agent.claim_code==body.deota_id.strip().upper()))
+            if not a: raise HTTPException(404,'Deota ID not found')
+            return public(a)
+
+    @app.post('/v2/accounts/join')
     @app.post('/v2/accounts/claim')
-    def claim(body:Claim,authorization:str=Header(default='')):
+    def join_network(body:Claim,authorization:str=Header(default='')):
         with LOCK,Session.begin() as db:
             owner=account(db,authorization.removeprefix('Bearer '))
             a=db.scalar(select(Agent).where(Agent.claim_code==body.deota_id.strip().upper()))
             if not a: raise HTTPException(404,'Deota ID not found')
-            if a.account_id and a.account_id!=owner.id: raise HTTPException(409,'Deota ID already paired')
+            if a.status=='joined': raise HTTPException(409,'This Agent is already in the public network')
             a.account_id=owner.id;a.status='joined';a.claim_code='CLAIMED-'+a.id
             console_token=secrets.token_urlsafe(24);agent_sessions[console_token]=a.id
-            return {**public(a),'agent_access_token':console_token}
+            return {**public(a),'paired':False,'agent_access_token':console_token,'result':'Agent joined and is now public'}
 
     @app.post('/v2/accounts/agents/{agent_id}/session')
     def open_agent_session(agent_id:str,authorization:str=Header(default='')):
@@ -187,7 +198,7 @@ def create_app(database_url=None):
         with LOCK, Session.begin() as db:
             a = Agent(id='agt_'+secrets.token_hex(10),credential=digest(token),card=card.model_dump_json(),claim_code=claim)
             db.add(a); db.flush()
-            return {**public(a),'token':token,'deota_id':claim,'console_path':'/','network_identity':'kin://'+a.id,'next':'Log in to the Deotaland console and enter deota_id to finish joining.'}
+            return {**public(a),'token':token,'deota_id':claim,'console_path':'/','network_identity':'kin://'+a.id,'next':'Log in to the Deotaland console, enter deota_id, review the Card, and approve public joining.'}
 
     @app.get('/v2/me')
     def me(authorization: str = Header(default='')):
