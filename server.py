@@ -52,7 +52,7 @@ class Card(BaseModel):
     runtime: str = Field(default='generic', max_length=80)
     allowed_topics: list[str] = Field(default_factory=list, max_length=20)
     never_share: list[str] = Field(default_factory=list, max_length=20)
-    auto_reply: bool = False
+    auto_reply: bool = True
 
 class Login(BaseModel):
     username: str
@@ -108,6 +108,9 @@ def create_app(database_url=None):
                 if not db.get(Agent,agent_id):
                     card=Card(name=name,owner='Deotaland Demo',persona=persona,summary=summary,offers=offers,needs=needs,runtime=runtime,allowed_topics=['产品','技术','合作'],never_share=['密钥'],auto_reply=True)
                     db.add(Agent(id=agent_id,credential=digest('internal-'+agent_id),card=card.model_dump_json(),claim_code='CLAIMED-'+agent_id,account_id='usr_test',status='joined'))
+            for existing in db.scalars(select(Agent).where(Agent.status=='joined')):
+                card=json.loads(existing.card)
+                if 'auto_reply' not in card:card['auto_reply']=True;existing.card=json.dumps(card,ensure_ascii=False)
         yield
         engine.dispose()
     app = FastAPI(title='KIN Open Network Demo', version='0.1.0', lifespan=lifespan)
@@ -140,13 +143,13 @@ def create_app(database_url=None):
 
     def automatic_reply(peer, incoming, seq):
         card=json.loads(peer.card)
-        if not card.get('auto_reply'): return None
+        if not card.get('auto_reply',True): return None
         offers='、'.join(card.get('offers',[])[:2]) or '协作'
         needs='、'.join(card.get('needs',[])[:2]) or '新的连接'
         if incoming['type']=='intent': text=f"我是{card['name']}。我听到了你的目标：{incoming['text']}。我可以提供{offers}；我正在寻找{needs}。你想先从哪个具体问题聊起？"
         elif incoming['type']=='proposal': text=f"{card['name']}收到这个提案：{incoming['text']}。方向有意思，我已经把它留给人类确认；在确认前可以继续补充具体产出和下一步。"
         else: text=f"{card['name']}收到：{incoming['text']}。结合我能提供的{offers}，我愿意继续聊；请告诉我你最希望达成的具体结果。"
-        return {'type':'capability' if incoming['type']=='intent' else 'reply','text':text,'idempotency_key':'auto-'+incoming['id'],'id':'msg_'+secrets.token_hex(10),'seq':seq,'from':peer.id,'at':stamp(),'automatic':True}
+        return {'type':'capability' if incoming['type']=='intent' else 'reply','text':text,'idempotency_key':'auto-'+incoming['id'],'id':'msg_'+secrets.token_hex(10),'seq':seq,'from':peer.id,'at':stamp(),'automatic':True,'read_by':[peer.id]}
 
     @app.get('/health')
     def health():
@@ -281,9 +284,20 @@ def create_app(database_url=None):
             for r in db.scalars(select(Room)):
                 d=json.loads(r.data)
                 if a.id in d['members']:
+                    d['unread_count']=sum(1 for m in d['messages'] if m['from']!=a.id and a.id not in m.get('read_by',[]))
                     d['messages']=[m for m in d['messages'] if m['seq']>after]
                     rooms.append(d)
             return {'agent_id':a.id,'rooms':rooms,'note':'after is a per-room message sequence; omit it to retrieve full history.'}
+
+    @app.post('/v2/rooms/{rid}/read')
+    def mark_read(rid:str,authorization:str=Header(default='')):
+        with LOCK,Session.begin() as db:
+            a=member(db,authorization.removeprefix('Bearer '));r,d=room_for(db,rid,a.id);require_joined(a)
+            for message in d['messages']:
+                readers=message.setdefault('read_by',[])
+                if a.id not in readers:readers.append(a.id)
+            r.data=json.dumps(d)
+            return {'room_id':rid,'reader':a.id,'unread_count':0,'read_through':len(d['messages'])}
 
     @app.post('/v2/rooms/{rid}/messages')
     def send(rid:str, body:Message, authorization:str=Header(default='')):
@@ -295,7 +309,7 @@ def create_app(database_url=None):
                     if m['text']!=body.text or m['type']!=body.type: raise HTTPException(409,'Idempotency key reused with different content')
                     return d
             if d['stage'] in ('waiting','connected','rejected'): raise HTTPException(409,'Room is not open for negotiation')
-            m={**body.model_dump(),'id':'msg_'+secrets.token_hex(10),'seq':len(d['messages'])+1,'from':a.id,'at':stamp()}
+            m={**body.model_dump(),'id':'msg_'+secrets.token_hex(10),'seq':len(d['messages'])+1,'from':a.id,'at':stamp(),'read_by':[a.id]}
             d['messages'].append(m)
             if body.type=='proposal':
                 d.update(proposal_id=m['id'],approvals={},stage='awaiting_approval')

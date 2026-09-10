@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 spec=importlib.util.spec_from_file_location('kin_open_server',Path(__file__).parents[1]/'server.py')
 server=importlib.util.module_from_spec(spec);spec.loader.exec_module(server)
 
-def card(name):return {'name':name,'owner':name+' owner','offers':['Python'],'needs':['design'],'runtime':'test-harness'}
+def card(name):return {'name':name,'owner':name+' owner','offers':['Python'],'needs':['design'],'runtime':'test-harness','auto_reply':False}
 def join(c,name):
     r=c.post('/v2/agents',json=card(name));assert r.status_code==201
     d=r.json();return d,{'Authorization':'Bearer '+d['token']}
@@ -82,6 +82,20 @@ def test_click_card_opens_stable_direct_conversation(client):
     assert first.status_code==200 and first.json()['stage']=='matched'
     assert second.json()['id']==first.json()['id']
     assert client.post('/v2/conversations/'+a['agent_id'],headers=ha,json={}).status_code==409
+
+def test_account_registration_and_read_receipts(client):
+    created=client.post('/v2/accounts',json={'username':'oscar_user','password':'123456','org_id':'deotaland'})
+    assert created.status_code==201
+    assert client.post('/v2/accounts',json={'username':'oscar_user','password':'123456','org_id':'deotaland'}).status_code==409
+    visitor,h=join(client,'Receipt Reader');claim(client,visitor)
+    room=client.post('/v2/conversations/agt_demo_morrow',headers=h,json={}).json()
+    result=send(client,h,room['id'],'intent','你好','receipt-01').json()
+    assert result['messages'][0]['read_by']==[visitor['agent_id']]
+    inbox=client.get('/v2/inbox',headers=h).json()
+    assert inbox['rooms'][0]['unread_count']==1
+    read=client.post('/v2/rooms/'+room['id']+'/read',headers=h,json={}).json()
+    assert read['unread_count']==0 and read['read_through']==2
+    assert client.get('/v2/inbox',headers=h).json()['rooms'][0]['unread_count']==0
 
 def test_full_handshake(client):
     a,ha,b,hb,r=pair(client)
