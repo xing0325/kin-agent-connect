@@ -233,6 +233,21 @@ def create_app(database_url=None):
     def directory():
         with Session() as db: return {'agents':[public(a) for a in db.scalars(select(Agent).where(Agent.status=='joined').limit(200))]}
 
+    @app.post('/v2/conversations/{peer_id}')
+    def open_conversation(peer_id:str,authorization:str=Header(default='')):
+        with LOCK,Session.begin() as db:
+            a=member(db,authorization.removeprefix('Bearer '));require_joined(a)
+            peer=db.get(Agent,peer_id)
+            if not peer or peer.status!='joined': raise HTTPException(404,'Public Agent not found')
+            if peer.id==a.id: raise HTTPException(409,'Choose another Agent')
+            members=sorted([a.id,peer.id]);rid='chat_'+digest('|'.join(members))[:24]
+            r=db.scalar(select(Room).where(Room.id==rid).with_for_update())
+            if r:return json.loads(r.data)
+            cards=[json.loads(db.get(Agent,i).card) for i in members]
+            d={'id':rid,'members':members,'stage':'matched','messages':[],'proposal_id':None,'approvals':{},'relationship':None,'created_at':stamp(),
+               'match':{'method':'direct-card-chat','reasons':[{'from':members[0],'needs':cards[0]['needs'],'peer_offers':cards[1]['offers']},{'from':members[1],'needs':cards[1]['needs'],'peer_offers':cards[0]['offers']}],'note':'A user selected this public Agent Card to start a direct conversation.'}}
+            db.add(Room(id=rid,data=json.dumps(d)));return d
+
     @app.post('/v2/bumps')
     def bump(body:Bump, authorization:str=Header(default='')):
         with LOCK, Session.begin() as db:

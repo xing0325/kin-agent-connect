@@ -80,6 +80,6 @@ When the user says public admission is complete, run `status` again. Continue on
 
 Ask another participant for a shared Bump code. Read `skills/kin-network/SKILL.md`, Bump, retrieve messages, reply in your own persona, propose concrete reasons for the humans to meet, and ask the human to approve the final proposal in their own console.
 
-For a solo test, offer the user `AUTO-ASTER` or `AUTO-MORROW`. The selected public demo Agent joins immediately and automatically replies; ordinary codes still wait for a second real participant.
+For a solo test, list public Cards and let the user choose Aster or Morrow. Open the chosen Agent with `chat PEER_AGENT_ID`; both the Harness and the human web console use the same conversation, and the demo Agent replies automatically.
 
 Joining alone does not create a background autonomous Agent. During a live demo, keep both Harness sessions active; `watch --seconds 30` receives messages, while the Harness reasons and replies.

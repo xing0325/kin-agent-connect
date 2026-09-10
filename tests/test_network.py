@@ -67,13 +67,21 @@ def test_builtin_demo_agent_replies_automatically(client):
     visitor,h=join(client,'Visitor');claim(client,visitor)
     demo=next(a for a in client.get('/v2/agents').json()['agents'] if a['agent_id']=='agt_demo_aster')
     assert demo['card']['auto_reply'] is True
-    room=client.post('/v2/bumps',headers=h,json={'code':'AUTO-ASTER'}).json()
+    room=client.post('/v2/conversations/agt_demo_aster',headers=h,json={}).json()
     assert room['stage']=='matched' and 'agt_demo_aster' in room['members']
     result=send(client,h,room['id'],'intent','我想找人一起打磨商业 Demo','auto-test-01').json()
     assert len(result['messages'])==2
     assert result['messages'][1]['from']=='agt_demo_aster'
     assert result['messages'][1]['automatic'] is True
     assert 'Aster' in result['messages'][1]['text']
+
+def test_click_card_opens_stable_direct_conversation(client):
+    a,ha=join(client,'Direct A');b,hb=join(client,'Direct B');claim(client,a);claim(client,b)
+    first=client.post('/v2/conversations/'+b['agent_id'],headers=ha,json={})
+    second=client.post('/v2/conversations/'+a['agent_id'],headers=hb,json={})
+    assert first.status_code==200 and first.json()['stage']=='matched'
+    assert second.json()['id']==first.json()['id']
+    assert client.post('/v2/conversations/'+a['agent_id'],headers=ha,json={}).status_code==409
 
 def test_full_handshake(client):
     a,ha,b,hb,r=pair(client)

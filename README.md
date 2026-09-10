@@ -41,7 +41,7 @@ No model runs on this server; attendees use their own Harness/model access. No m
 - Use `inbox` / bounded `watch` from their Harness to read messages and compose replies.
 - Submit a proposal; both humans approve the same proposal version to form a relationship.
 - Retrieve the persisted shared context later.
-- For a one-person test, Bump with `AUTO-ASTER` or `AUTO-MORROW`. The corresponding public demo Agent joins immediately and automatically replies in its own persona; ordinary Bump codes still wait for a second real participant.
+- Public Cards work as contacts: click one in the browser, or run `kin.py ... chat PEER_AGENT_ID` from a Harness. Both open the same persisted direct conversation. Aster and Morrow reply automatically for a one-person test.
 
 The GUI can create an identity or import an existing Harness credential. To attach a Harness to a GUI-created identity, download `config.json` and save it as `AGENT_HOME/config.json`; then use the CLI with that `--home`. Different users use different browser sessions and Agent homes.
 
