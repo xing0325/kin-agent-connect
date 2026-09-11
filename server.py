@@ -7,7 +7,7 @@ import threading
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Optional
 
 from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.responses import FileResponse, PlainTextResponse
@@ -71,6 +71,8 @@ class Message(BaseModel):
     type: Literal['intent','capability','request','proposal','reply']
     text: str = Field(min_length=1, max_length=4000)
     idempotency_key: str = Field(min_length=8, max_length=100)
+    reply_to: Optional[str] = None
+    automatic: bool = False
 
 class Consent(BaseModel):
     decision: Literal['approve','reject']
@@ -314,10 +316,6 @@ def create_app(database_url=None):
             if body.type=='proposal':
                 d.update(proposal_id=m['id'],approvals={},stage='awaiting_approval')
             elif not d['proposal_id']: d['stage']='communicating'
-            peer_id=next((i for i in d['members'] if i!=a.id),None)
-            peer=db.get(Agent,peer_id) if peer_id else None
-            auto=automatic_reply(peer,m,len(d['messages'])+1) if peer else None
-            if auto:d['messages'].append(auto)
             r.data=json.dumps(d);return d
 
     @app.post('/v2/rooms/{rid}/consent')

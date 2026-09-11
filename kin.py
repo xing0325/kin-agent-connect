@@ -55,12 +55,14 @@ def run_worker(api, home, agent_id, seconds, interval, base_url, model, api_key)
         for room in api('GET','/v2/inbox')['rooms']:
             peer_id=next((x for x in room['members'] if x!=agent_id),None)
             peer=directory.get(peer_id,{'agent_id':peer_id,'card':{}})
+            answered={m.get('reply_to') for m in room['messages'] if m['from']==agent_id}
             for incoming in room['messages']:
-                if incoming['from']==agent_id or incoming['id'] in handled or incoming.get('automatic'): continue
+                if incoming['from']==agent_id or incoming['id'] in handled or incoming['id'] in answered or incoming.get('automatic'): continue
                 text=model_reply(base_url,api_key,model,me,peer,room['messages'],incoming)
                 result=api('POST','/v2/rooms/'+room['id']+'/messages',{'type':'reply','text':text,
                     'idempotency_key':'llm-'+incoming['id'],'reply_to':incoming['id'],'automatic':True})
                 handled.add(incoming['id']);state_file.write_text(json.dumps({'handled':sorted(handled)},indent=2));state_file.chmod(0o600)
+                api('POST','/v2/rooms/'+room['id']+'/read',{})
                 print(json.dumps({'room':room['id'],'reply_to':incoming['id'],'text':text},ensure_ascii=False),flush=True)
         if deadline is None or time.monotonic()>=deadline: break
         time.sleep(min(interval,max(0,deadline-time.monotonic())))

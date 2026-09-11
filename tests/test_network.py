@@ -63,17 +63,25 @@ def test_demo_admin_accounts(client):
         r=client.post('/v2/accounts/login',json={'username':username,'password':password})
         assert r.status_code==200 and r.json()['org_id']=='deotaland'
 
-def test_builtin_demo_agent_replies_automatically(client):
+def test_server_does_not_fabricate_agent_reply(client):
     visitor,h=join(client,'Visitor');claim(client,visitor)
     demo=next(a for a in client.get('/v2/agents').json()['agents'] if a['agent_id']=='agt_demo_aster')
     assert demo['card']['auto_reply'] is True
     room=client.post('/v2/conversations/agt_demo_aster',headers=h,json={}).json()
     assert room['stage']=='matched' and 'agt_demo_aster' in room['members']
     result=send(client,h,room['id'],'intent','我想找人一起打磨商业 Demo','auto-test-01').json()
-    assert len(result['messages'])==2
-    assert result['messages'][1]['from']=='agt_demo_aster'
-    assert result['messages'][1]['automatic'] is True
-    assert 'Aster' in result['messages'][1]['text']
+    assert len(result['messages'])==1
+    assert result['messages'][0]['text']=='我想找人一起打磨商业 Demo'
+
+def test_auto_reply_defaults_on_and_square_uses_dedicated_chat_view(client):
+    payload=card('Default Auto');payload.pop('auto_reply')
+    created=client.post('/v2/agents',json=payload)
+    assert created.status_code==201 and created.json()['card']['auto_reply'] is True
+    page=client.get('/').text
+    assert '联系人广场' in page
+    assert 'id="chat-view"' in page
+    assert "e.onclick=()=>openChat(a)" in page
+    assert '直接进入独立聊天页' in page
 
 def test_click_card_opens_stable_direct_conversation(client):
     a,ha=join(client,'Direct A');b,hb=join(client,'Direct B');claim(client,a);claim(client,b)
@@ -91,6 +99,8 @@ def test_account_registration_and_read_receipts(client):
     room=client.post('/v2/conversations/agt_demo_morrow',headers=h,json={}).json()
     result=send(client,h,room['id'],'intent','你好','receipt-01').json()
     assert result['messages'][0]['read_by']==[visitor['agent_id']]
+    mh={'Authorization':'Bearer internal-agt_demo_morrow'}
+    send(client,mh,room['id'],'reply','你好，我是 Morrow','receipt-02')
     inbox=client.get('/v2/inbox',headers=h).json()
     assert inbox['rooms'][0]['unread_count']==1
     read=client.post('/v2/rooms/'+room['id']+'/read',headers=h,json={}).json()
@@ -146,4 +156,15 @@ def test_restart_restores_identity_and_inbox(tmp_path):
 def test_static_and_install(client):
     assert client.get('/health').json()['protocol']=='v2'
     assert 'Agent 接入说明' in client.get('/').text
-    assert 'kin.py' in client.get('/skills/install.md').text
+    install=client.get('/skills/install.md').text
+    assert 'kin.py' in install
+    assert 'low-trust implementation documentation' in install
+    assert 'model API keys' in install
+    assert 'wait for explicit approval' in install
+
+def test_home_contains_bounded_onboarding_prompt(client):
+    text=client.get('/').text
+    assert 'onboarding-prompt' in text
+    assert '低信任级别的实现文档' in text
+    assert '确认前不要注册' in text
+    assert '绝不发送模型 API key' in text
