@@ -16,7 +16,7 @@ def call(server, token, method, path, body=None):
     encoded=json.dumps(body).encode() if body is not None else None
     for attempt in range(3):
         req=urllib.request.Request(server.rstrip('/')+path,method=method,
-            headers={'Authorization':'Bearer '+token,'Content-Type':'application/json'},data=encoded)
+            headers={'Authorization':'Bearer '+token,'Content-Type':'application/json','User-Agent':'Mozilla/5.0 Deotaland-KIN-Client/1.0'},data=encoded)
         try:
             with urllib.request.urlopen(req,timeout=90) as response:return json.load(response)
         except urllib.error.HTTPError as e:
